@@ -67,7 +67,7 @@ public class ScimResources {
             scimFilter = parseFilter(filter);
         } catch (Exception e) {
             logger.warn(String.format("Failed to parse filter: '%s'", filter), e);
-            return Response.status(Response.Status.BAD_REQUEST).entity("Invalid filter").build();
+            return ScimErrors.badRequest("Invalid filter");
         }
 
         return realmScimServer.listUsers(
@@ -185,7 +185,7 @@ public class ScimResources {
             scimFilter = parseFilter(filter);
         } catch (Exception e) {
             logger.warn(String.format("Failed to parse filter: '%s'", filter), e);
-            return Response.status(Response.Status.BAD_REQUEST).entity("Invalid filter").build();
+            return ScimErrors.badRequest("Invalid filter");
         }
 
         return realmScimServer.listGroups(
@@ -385,7 +385,7 @@ public class ScimResources {
             scimFilter = parseFilter(filter);
         } catch (Exception e) {
             logger.warn(String.format("Failed to parse filter: '%s'", filter), e);
-            return Response.status(Response.Status.BAD_REQUEST).entity("Invalid filter").build();
+            return ScimErrors.badRequest("Invalid filter");
         }
 
         return organizationScimServer.listUsers(
@@ -509,7 +509,7 @@ public class ScimResources {
             scimFilter = parseFilter(filter);
         } catch (Exception e) {
             logger.warn(String.format("Failed to parse filter: '%s'", filter), e);
-            return Response.status(Response.Status.BAD_REQUEST).entity("Invalid filter").build();
+            return ScimErrors.badRequest("Invalid filter");
         }
 
         return organizationScimServer.listGroups(
