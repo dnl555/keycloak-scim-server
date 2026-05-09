@@ -227,12 +227,21 @@ public class OrganizationUserController extends UsersController  {
                 }
                 for (java.util.Map.Entry<?, ?> entry : valueMap.entrySet()) {
                     String attrPath = String.valueOf(entry.getKey());
+                    if (isReadOnlyOrStructural(attrPath)) {
+                        // RFC 7644 §3.5.2 / §7.5: ignore read-only and
+                        // structural attributes (id, externalId, meta, schemas).
+                        continue;
+                    }
                     UserAttribute<?> ua = userAttributes.findByScimPath(attrPath);
                     if (ua == null) {
                         throw new UnsupportedUserPath("Unsupported attribute: " + attrPath);
                     }
                     applyOrgPatchValue(op, ua, existing, entry.getValue());
                 }
+                continue;
+            }
+
+            if (isReadOnlyOrStructural(path)) {
                 continue;
             }
 
@@ -267,6 +276,21 @@ public class OrganizationUserController extends UsersController  {
      * Apply a single attribute patch to the given org-scope user.
      * Used by both the path-based and path-less branches of patchOrganizationUser.
      */
+    /**
+     * Whether the given SCIM attribute path refers to a read-only or
+     * structural core attribute that PATCH must ignore per RFC 7644 §3.5.2
+     * (and the SCIM core schema, RFC 7643 §3.1).
+     */
+    private static boolean isReadOnlyOrStructural(String attrPath) {
+        if (attrPath == null) {
+            return false;
+        }
+        return switch (attrPath) {
+            case "id", "externalId", "meta", "schemas" -> true;
+            default -> false;
+        };
+    }
+
     private void applyOrgPatchValue(PatchOperation op, UserAttribute<?> ua, UserModel existing, Object value) {
         switch (op) {
             case REPLACE, ADD -> {
