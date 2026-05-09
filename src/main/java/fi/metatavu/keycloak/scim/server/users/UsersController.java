@@ -314,12 +314,22 @@ public class UsersController extends AbstractController {
                 }
                 for (Map.Entry<?, ?> entry : valueMap.entrySet()) {
                     String attrPath = String.valueOf(entry.getKey());
+                    if (isReadOnlyOrStructural(attrPath)) {
+                        // RFC 7644 §3.5.2 / §7.5: ignore read-only and
+                        // structural attributes (id, externalId, meta, schemas)
+                        // on PATCH. Clients (Okta) echo them back from a prior GET.
+                        continue;
+                    }
                     UserAttribute<?> ua = userAttributes.findByScimPath(attrPath);
                     if (ua == null) {
                         throw new UnsupportedUserPath("Unsupported attribute: " + attrPath);
                     }
                     applyPatchValue(op, ua, existing, entry.getValue());
                 }
+                continue;
+            }
+
+            if (isReadOnlyOrStructural(path)) {
                 continue;
             }
 
@@ -345,6 +355,25 @@ public class UsersController extends AbstractController {
 
 
         return patchedUser;
+    }
+
+    /**
+     * Whether the given SCIM attribute path refers to a read-only or
+     * structural core attribute that PATCH must ignore per RFC 7644 §3.5.2
+     * (and the SCIM core schema, RFC 7643 §3.1).
+     *
+     * Concretely: id, externalId, meta, and schemas. Servers MUST not error
+     * on these in PATCH payloads; clients (Okta) echo them back from a prior
+     * GET as part of the resource representation.
+     */
+    private static boolean isReadOnlyOrStructural(String attrPath) {
+        if (attrPath == null) {
+            return false;
+        }
+        return switch (attrPath) {
+            case "id", "externalId", "meta", "schemas" -> true;
+            default -> false;
+        };
     }
 
     /**

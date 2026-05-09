@@ -183,6 +183,13 @@ public class GroupsController extends AbstractController {
                 }
                 for (Map.Entry<?, ?> entry : valueMap.entrySet()) {
                     String attrPath = String.valueOf(entry.getKey());
+                    if (isReadOnlyOrStructural(attrPath)) {
+                        // RFC 7644 §3.5.2 / §7.5: ignore read-only and
+                        // structural attributes (id, externalId, meta, schemas)
+                        // on PATCH. Okta echoes the resource id back inside
+                        // 'value' on Group Push.
+                        continue;
+                    }
                     GroupAttribute attr = GroupAttribute.findByScimPath(attrPath);
                     if (attr == null) {
                         throw new UnsupportedGroupPath("Unsupported attribute: " + attrPath);
@@ -196,6 +203,10 @@ public class GroupsController extends AbstractController {
             String attributePath = path != null && path.contains("[")
                 ? path.substring(0, path.indexOf("["))
                 : path;
+
+            if (isReadOnlyOrStructural(attributePath)) {
+                continue;
+            }
 
             GroupAttribute groupAttribute = GroupAttribute.findByScimPath(attributePath);
             if (groupAttribute == null) {
@@ -277,6 +288,25 @@ public class GroupsController extends AbstractController {
         }
 
         return translateGroup(scimContext, existing);
+    }
+
+    /**
+     * Whether the given SCIM attribute path refers to a read-only or
+     * structural core attribute that PATCH must ignore per RFC 7644 §3.5.2
+     * (and the SCIM core schema, RFC 7643 §3.1).
+     *
+     * Concretely: id, externalId, meta, and schemas. Servers MUST not error
+     * on these in PATCH payloads; clients (notably Okta on Group Push)
+     * echo them back from a prior GET as part of the resource representation.
+     */
+    private static boolean isReadOnlyOrStructural(String attrPath) {
+        if (attrPath == null) {
+            return false;
+        }
+        return switch (attrPath) {
+            case "id", "externalId", "meta", "schemas" -> true;
+            default -> false;
+        };
     }
 
     /**
