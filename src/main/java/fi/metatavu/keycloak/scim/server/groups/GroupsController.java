@@ -504,7 +504,7 @@ public class GroupsController extends AbstractController {
                 scimContext,
                 OperationType.CREATE,
                 ResourceType.GROUP_MEMBERSHIP,
-                "groups/" + group.getId() + "/members/" + user.getId(),
+                "users/" + user.getId() + "/groups/" + group.getId(),
                 groupRepresentation,
                  Map.of(
                          UserModel.USERNAME, user.getUsername(),
@@ -531,7 +531,7 @@ public class GroupsController extends AbstractController {
                 scimContext,
                 OperationType.DELETE,
                 ResourceType.GROUP_MEMBERSHIP,
-                "groups/" + group.getId() + "/members/" + user.getId(),
+                "users/" + user.getId() + "/groups/" + group.getId(),
                 groupRepresentation,
                 Map.of(
                         UserModel.USERNAME, user.getUsername(),
