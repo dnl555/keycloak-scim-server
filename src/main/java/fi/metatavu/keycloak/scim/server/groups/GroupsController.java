@@ -52,6 +52,14 @@ public class GroupsController extends AbstractController {
 
         GroupModel group = session.groups().createGroup(realm, scimGroup.getDisplayName());
 
+        // Persist the SCIM externalId set by the inbound client (e.g. Okta
+        // Group Push) as a Keycloak group attribute. Mirrors what the user
+        // path does via the User Profile; groups have no User-Profile-style
+        // declaration so we write the attribute directly. Stored only when
+        // non-empty to keep the attribute absent for clients that don't set
+        // it, matching prior behaviour for those callers.
+        writeGroupExternalId(group, scimGroup);
+
         if (scimGroup.getMembers() != null) {
             for (GroupMembersInner member : scimGroup.getMembers()) {
                 UserModel user = session.users().getUserById(realm, member.getValue());
@@ -64,6 +72,21 @@ public class GroupsController extends AbstractController {
         dispatchGroupCreateEvent(scimContext, group);
 
         return translateGroup(scimContext, group);
+    }
+
+    /**
+     * Stores the SCIM externalId of a Group resource as a Keycloak group
+     * attribute named "externalId". No-op when the inbound payload has no
+     * externalId set.
+     *
+     * @param group   Keycloak group
+     * @param scimGroup SCIM group from the request body
+     */
+    private void writeGroupExternalId(GroupModel group, Group scimGroup) {
+        String externalId = scimGroup.getExternalId();
+        if (externalId != null && !externalId.isEmpty()) {
+            group.setSingleAttribute("externalId", externalId);
+        }
     }
 
     /**
@@ -142,6 +165,7 @@ public class GroupsController extends AbstractController {
      */
     public Group updateGroup(ScimContext scimContext, GroupModel existing, fi.metatavu.keycloak.scim.server.model.Group group) {
         existing.setName(group.getDisplayName());
+        writeGroupExternalId(existing, group);
         return translateGroup(scimContext, existing);
     }
 
@@ -185,9 +209,20 @@ public class GroupsController extends AbstractController {
                     String attrPath = String.valueOf(entry.getKey());
                     if (isReadOnlyOrStructural(attrPath)) {
                         // RFC 7644 §3.5.2 / §7.5: ignore read-only and
-                        // structural attributes (id, externalId, meta, schemas)
-                        // on PATCH. Okta echoes the resource id back inside
-                        // 'value' on Group Push.
+                        // structural attributes (id, meta, schemas) on PATCH.
+                        // Okta echoes the resource id back inside 'value' on
+                        // Group Push.
+                        continue;
+                    }
+                    if ("externalId".equals(attrPath)) {
+                        // externalId is client-settable (RFC 7643 §3.1).
+                        // Persist it as a Keycloak group attribute so it
+                        // can be read on outbound representation.
+                        if (op != PatchOperation.REMOVE && entry.getValue() instanceof String s) {
+                            existing.setSingleAttribute("externalId", s);
+                        } else if (op == PatchOperation.REMOVE) {
+                            existing.removeAttribute("externalId");
+                        }
                         continue;
                     }
                     GroupAttribute attr = GroupAttribute.findByScimPath(attrPath);
@@ -205,6 +240,17 @@ public class GroupsController extends AbstractController {
                 : path;
 
             if (isReadOnlyOrStructural(attributePath)) {
+                continue;
+            }
+
+            if ("externalId".equals(attributePath)) {
+                // See path-less branch above: store client-settable
+                // externalId as a Keycloak group attribute.
+                if (op != PatchOperation.REMOVE && value instanceof String s) {
+                    existing.setSingleAttribute("externalId", s);
+                } else if (op == PatchOperation.REMOVE) {
+                    existing.removeAttribute("externalId");
+                }
                 continue;
             }
 
@@ -304,7 +350,7 @@ public class GroupsController extends AbstractController {
             return false;
         }
         return switch (attrPath) {
-            case "id", "externalId", "meta", "schemas" -> true;
+            case "id", "meta", "schemas" -> true;
             default -> false;
         };
     }
@@ -438,12 +484,22 @@ public class GroupsController extends AbstractController {
                 )
                 .toList();
 
-        return new Group()
+        Group result = new Group()
                 .id(group.getId())
                 .displayName(group.getName())
                 .members(members)
                 .schemas(Collections.singletonList(Schemas.GROUP_SCHEMA))
                 .meta(getMeta(scimContext, "Group", String.format("Groups/%s", group.getId())));
+
+        // Expose the stored externalId attribute (typically the upstream
+        // SCIM client's identifier, e.g. Okta's group id) on the SCIM Group
+        // representation.
+        String externalId = group.getFirstAttribute("externalId");
+        if (externalId != null && !externalId.isEmpty()) {
+            result.setExternalId(externalId);
+        }
+
+        return result;
     }
 
     /**

@@ -542,6 +542,8 @@ components:
       properties:
         id:
           type: string
+        externalId:
+          type: string
         displayName:
           type: string
         members:
