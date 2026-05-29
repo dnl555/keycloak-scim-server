@@ -24,8 +24,10 @@ import org.keycloak.representations.idm.GroupRepresentation;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -269,32 +271,8 @@ public class GroupsController extends AbstractController {
                 case REPLACE, ADD -> {
                     switch (groupAttribute) {
                         case DISPLAY_NAME -> existing.setName((String) value);
-                        case MEMBERS -> {
-                            // Clear current members if REPLACE, just add if ADD
-                            if (op == PatchOperation.REPLACE) {
-                                session.users().getGroupMembersStream(realm, existing)
-                                    .forEach(user -> user.leaveGroup(existing));
-                            }
-
-                            for (Object obj : (List<?>) value) {
-                                if (!(obj instanceof Map<?, ?> memberMap)) {
-                                    logger.warn("Invalid member object: " + obj);
-                                    continue;
-                                }
-
-                                String memberId = (String) memberMap.get("value");
-                                if (memberId == null) {
-                                    logger.warn("Member value missing: " + obj);
-                                    continue;
-                                }
-
-                                UserModel user = scimContext.getSession().users().getUserById(scimContext.getRealm(), memberId);
-                                if (user != null) {
-                                    user.joinGroup(existing);
-                                    dispatchGroupMembershipJoinEvent(scimContext, existing, user);
-                                }
-                            }
-                        }
+                        case MEMBERS -> applyMembersOp(scimContext, op,
+                                value instanceof List<?> list ? list : null, existing);
                     }
                 }
 
@@ -305,27 +283,13 @@ public class GroupsController extends AbstractController {
                             // Handle path filter (e.g., "members[value eq \"user-id\"]")
                             if (path != null && path.contains("[")) {
                                 String memberId = extractValueFromFilter(path);
-                                if (memberId != null) {
-                                    UserModel user = session.users().getUserById(realm, memberId);
-                                    if (user != null) {
-                                        user.leaveGroup(existing);
-                                        dispatchGroupMembershipLeaveEvent(scimContext, existing, user);
-                                    }
+                                UserModel user = resolveMember(session, realm, memberId);
+                                if (user != null && user.isMemberOf(existing)) {
+                                    user.leaveGroup(existing);
+                                    dispatchGroupMembershipLeaveEvent(scimContext, existing, user);
                                 }
                             } else if (value instanceof List<?> list) {
-                                // Handle direct value list
-                                for (Object obj : list) {
-                                    if (obj instanceof Map<?, ?> memberMap) {
-                                        String memberId = (String) memberMap.get("value");
-                                        if (memberId != null) {
-                                            UserModel user = session.users().getUserById(realm, memberId);
-                                            if (user != null) {
-                                                user.leaveGroup(existing);
-                                                dispatchGroupMembershipLeaveEvent(scimContext, existing, user);
-                                            }
-                                        }
-                                    }
-                                }
+                                applyMembersOp(scimContext, op, list, existing);
                             }
                         }
                     }
@@ -380,53 +344,117 @@ public class GroupsController extends AbstractController {
                             existing.setName(s);
                         }
                     }
-                    case MEMBERS -> {
-                        if (op == PatchOperation.REPLACE) {
-                            session.users().getGroupMembersStream(realm, existing)
-                                    .forEach(user -> user.leaveGroup(existing));
-                        }
-                        if (value instanceof List<?> list) {
-                            for (Object obj : list) {
-                                if (!(obj instanceof Map<?, ?> memberMap)) {
-                                    continue;
-                                }
-                                String memberId = (String) memberMap.get("value");
-                                if (memberId == null) {
-                                    continue;
-                                }
-                                UserModel user = session.users().getUserById(realm, memberId);
-                                if (user != null) {
-                                    user.joinGroup(existing);
-                                    dispatchGroupMembershipJoinEvent(scimContext, existing, user);
-                                }
-                            }
-                        }
-                    }
+                    case MEMBERS -> applyMembersOp(scimContext, op,
+                            value instanceof List<?> list ? list : null, existing);
                 }
             }
             case REMOVE -> {
                 switch (attr) {
                     case DISPLAY_NAME -> existing.setName(null);
-                    case MEMBERS -> {
-                        if (value instanceof List<?> list) {
-                            for (Object obj : list) {
-                                if (obj instanceof Map<?, ?> memberMap) {
-                                    String memberId = (String) memberMap.get("value");
-                                    if (memberId != null) {
-                                        UserModel user = session.users().getUserById(realm, memberId);
-                                        if (user != null) {
-                                            user.leaveGroup(existing);
-                                            dispatchGroupMembershipLeaveEvent(scimContext, existing, user);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    case MEMBERS -> applyMembersOp(scimContext, op,
+                            value instanceof List<?> list ? list : null, existing);
                 }
             }
         }
     }
+
+    /**
+     * Resolve a SCIM group-member "value" to a Keycloak user.
+     *
+     * The value is normally the Keycloak user id (the SCIM resource id this
+     * server returned to the client). Clients can however hold a value that
+     * no longer maps via id, for example after the user was recreated, or
+     * may send the upstream externalId. To avoid silently dropping members
+     * we fall back to the externalId attribute (namespaced and bare keys)
+     * and finally username / email.
+     */
+    private UserModel resolveMember(KeycloakSession session, RealmModel realm, String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        UserModel byId = session.users().getUserById(realm, value);
+        if (byId != null) {
+            return byId;
+        }
+        for (String attr : MEMBER_LOOKUP_ATTRS) {
+            UserModel byAttr = session.users()
+                    .searchForUserByUserAttributeStream(realm, attr, value)
+                    .findFirst()
+                    .orElse(null);
+            if (byAttr != null) {
+                return byAttr;
+            }
+        }
+        UserModel byUsername = session.users().getUserByUsername(realm, value);
+        if (byUsername != null) {
+            return byUsername;
+        }
+        return session.users().getUserByEmail(realm, value);
+    }
+
+    /**
+     * Apply a members ADD / REPLACE / REMOVE to a group.
+     *
+     * REPLACE is implemented as a diff against the current membership rather
+     * than a clear-all-then-re-add: a member that fails to resolve can no
+     * longer wipe the whole group, and a single logical remove on the client
+     * cannot cascade into unrelated members. Members are resolved via
+     * {@link #resolveMember}.
+     */
+    private void applyMembersOp(ScimContext scimContext, PatchOperation op, List<?> memberList, GroupModel existing) {
+        KeycloakSession session = scimContext.getSession();
+        RealmModel realm = scimContext.getRealm();
+
+        Set<String> targetIds = new LinkedHashSet<>();
+        if (memberList != null) {
+            for (Object obj : memberList) {
+                if (!(obj instanceof Map<?, ?> memberMap)) {
+                    continue;
+                }
+                Object raw = memberMap.get("value");
+                UserModel user = resolveMember(session, realm, raw == null ? null : String.valueOf(raw));
+                if (user != null) {
+                    targetIds.add(user.getId());
+                } else {
+                    logger.warnf("Group member value could not be resolved to a user: %s", raw);
+                }
+            }
+        }
+
+        if (op == PatchOperation.REMOVE) {
+            for (String uid : targetIds) {
+                UserModel user = session.users().getUserById(realm, uid);
+                if (user != null && user.isMemberOf(existing)) {
+                    user.leaveGroup(existing);
+                    dispatchGroupMembershipLeaveEvent(scimContext, existing, user);
+                }
+            }
+            return;
+        }
+
+        // ADD or REPLACE: join any resolved target not already a member.
+        for (String uid : targetIds) {
+            UserModel user = session.users().getUserById(realm, uid);
+            if (user != null && !user.isMemberOf(existing)) {
+                user.joinGroup(existing);
+                dispatchGroupMembershipJoinEvent(scimContext, existing, user);
+            }
+        }
+
+        // REPLACE: drop only current members absent from the resolved target set.
+        if (op == PatchOperation.REPLACE) {
+            for (UserModel current : session.users().getGroupMembersStream(realm, existing).collect(Collectors.toList())) {
+                if (!targetIds.contains(current.getId())) {
+                    current.leaveGroup(existing);
+                    dispatchGroupMembershipLeaveEvent(scimContext, existing, current);
+                }
+            }
+        }
+    }
+
+    private static final List<String> MEMBER_LOOKUP_ATTRS = List.of(
+            "urn:ietf:params:scim:schemas:core:2.0:User:externalId",
+            "externalId");
 
     /**
      * Deletes a group
