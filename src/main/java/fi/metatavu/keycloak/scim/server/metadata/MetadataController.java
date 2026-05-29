@@ -276,6 +276,41 @@ public class MetadataController extends AbstractController {
                 SchemaAttribute.UniquenessEnum.NONE,
                 UserModel::isEnabled,
                 UserModel::setEnabled
+            ),
+            // SCIM displayName. Keycloak has no native displayName field, so
+            // this is a COMPUTED attribute: it is not pushed to the indexed
+            // user search and is evaluated in-memory. Some IdPs (notably
+            // Microsoft Entra) reconcile users by filtering on displayName;
+            // without this, GET /Users?filter=displayName eq "..." returned a
+            // 500 and broke Entra's provisioning cycle. Reader prefers a
+            // persisted "displayName" attribute (set on create/update from the
+            // inbound SCIM payload), then "<firstName> <lastName>", then the
+            // username. Writer persists it so later filters match exactly.
+            new StringUserAttribute(
+                UserAttribute.Source.COMPUTED,
+                "displayName",
+                "displayName",
+                "Display name",
+                SchemaAttribute.TypeEnum.STRING,
+                SchemaAttribute.MutabilityEnum.READWRITE,
+                SchemaAttribute.UniquenessEnum.NONE,
+                user -> {
+                    String stored = user.getFirstAttribute("displayName");
+                    if (stored != null && !stored.isBlank()) {
+                        return stored;
+                    }
+                    String fn = user.getFirstName() == null ? "" : user.getFirstName();
+                    String ln = user.getLastName() == null ? "" : user.getLastName();
+                    String full = (fn + " " + ln).trim();
+                    return full.isEmpty() ? user.getUsername() : full;
+                },
+                (user, value) -> {
+                    if (value == null || value.isBlank()) {
+                        user.removeAttribute("displayName");
+                    } else {
+                        user.setSingleAttribute("displayName", value);
+                    }
+                }
             )
         );
 
@@ -284,7 +319,11 @@ public class MetadataController extends AbstractController {
             UserModel.EMAIL,
             UserModel.FIRST_NAME,
             UserModel.LAST_NAME,
-            UserModel.ENABLED
+            UserModel.ENABLED,
+            // The persisted backing attribute for the computed displayName, so a
+            // realm User Profile attribute literally named "displayName" does not
+            // double-register against the built-in displayName attribute.
+            "displayName"
         );
 
         List<UserAttribute<String>> customAttributes = new ArrayList<>();

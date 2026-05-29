@@ -20,7 +20,13 @@ public class UserAttribute <T> {
      */
     public enum Source {
         USER_MODEL,
-        USER_PROFILE
+        USER_PROFILE,
+        // Computed attributes have no single backing Keycloak field and are
+        // not pushed to the indexed user search; they are evaluated in-memory
+        // (e.g. the SCIM displayName, derived from name parts or a persisted
+        // attribute). Used so clients that filter by such an attribute get a
+        // valid SCIM result instead of an error.
+        COMPUTED
     }
 
     private final Source source;
