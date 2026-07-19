@@ -341,7 +341,15 @@ public class MetadataController extends AbstractController {
                         SchemaAttribute.MutabilityEnum.READWRITE,
                         SchemaAttribute.UniquenessEnum.NONE,
                         user -> user.getFirstAttribute(userProfileAttribute.getName()),
-                        (user, value) -> user.setAttribute(userProfileAttribute.getName(), List.of(value))
+                        // Null-safe: List.of(null) throws NPE, so a SCIM PATCH that clears a
+                        // declared attribute (null value) must remove it, mirroring displayName.
+                        (user, value) -> {
+                            if (value == null) {
+                                user.removeAttribute(userProfileAttribute.getName());
+                            } else {
+                                user.setAttribute(userProfileAttribute.getName(), List.of(value));
+                            }
+                        }
                     ));
                 }
             }
