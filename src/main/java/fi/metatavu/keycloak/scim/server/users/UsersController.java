@@ -302,7 +302,7 @@ public class UsersController extends AbstractController {
                 throw new UnsupportedPatchOperation("Unsupported patch operation: " + operation.getOp());
             }
 
-            String path = operation.getPath();
+            String path = normalizeScimPath(operation.getPath());
             Object value = operation.getValue();
 
             // RFC 7644 §3.5.2: when "path" is omitted, "value" carries a map of
@@ -313,7 +313,7 @@ public class UsersController extends AbstractController {
                     throw new UnsupportedUserPath("PatchOp without 'path' requires a map-valued 'value'");
                 }
                 for (Map.Entry<?, ?> entry : valueMap.entrySet()) {
-                    String attrPath = String.valueOf(entry.getKey());
+                    String attrPath = normalizeScimPath(String.valueOf(entry.getKey()));
                     if (isReadOnlyOrStructural(attrPath)) {
                         // RFC 7644 §3.5.2 / §7.5: ignore read-only and
                         // structural attributes (id, externalId, meta, schemas)
@@ -391,6 +391,29 @@ public class UsersController extends AbstractController {
      */
     private static boolean isUnsupportedComplexPath(String path) {
         return path != null && path.contains("[");
+    }
+
+    private static final String CORE_USER_SCHEMA_PREFIX = "urn:ietf:params:scim:schemas:core:2.0:User:";
+    private static final String ENTERPRISE_USER_SCHEMA_PREFIX =
+        "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:";
+
+    /**
+     * Strips the SCIM core / enterprise User schema URN prefix from a PATCH path so enterprise
+     * extension attributes (e.g. {@code urn:...:extension:enterprise:2.0:User:department}) resolve
+     * by their bare name (e.g. {@code department}), which can be declared as a user-profile
+     * attribute. Without this the exact-match findByScimPath never resolves them and 500s.
+     */
+    private static String normalizeScimPath(String path) {
+        if (path == null) {
+            return null;
+        }
+        if (path.startsWith(ENTERPRISE_USER_SCHEMA_PREFIX)) {
+            return path.substring(ENTERPRISE_USER_SCHEMA_PREFIX.length());
+        }
+        if (path.startsWith(CORE_USER_SCHEMA_PREFIX)) {
+            return path.substring(CORE_USER_SCHEMA_PREFIX.length());
+        }
+        return path;
     }
 
     /**
