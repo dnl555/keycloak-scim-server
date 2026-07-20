@@ -322,6 +322,10 @@ public class UsersController extends AbstractController {
                     }
                     UserAttribute<?> ua = userAttributes.findByScimPath(attrPath);
                     if (ua == null) {
+                        if (isUnsupportedComplexPath(attrPath)) {
+                            logger.warn("Skipping unsupported multi-valued SCIM PATCH path: " + attrPath);
+                            continue;
+                        }
                         throw new UnsupportedUserPath("Unsupported attribute: " + attrPath);
                     }
                     applyPatchValue(op, ua, existing, entry.getValue());
@@ -335,6 +339,10 @@ public class UsersController extends AbstractController {
 
             UserAttribute<?> userAttribute = userAttributes.findByScimPath(path);
             if (userAttribute == null) {
+                if (isUnsupportedComplexPath(path)) {
+                    logger.warn("Skipping unsupported multi-valued SCIM PATCH path: " + path);
+                    continue;
+                }
                 throw new UnsupportedUserPath("Unsupported attribute: " + path);
             }
             applyPatchValue(op, userAttribute, existing, value);
@@ -374,6 +382,15 @@ public class UsersController extends AbstractController {
             case "id", "externalId", "meta", "schemas" -> true;
             default -> false;
         };
+    }
+
+    /**
+     * A value-filter path such as {@code addresses[type eq "work"].streetAddress} selects into a
+     * complex multi-valued SCIM attribute Keycloak does not model. Skipping the operation rather
+     * than throwing lets the rest of the PATCH apply instead of failing the whole request with 500.
+     */
+    private static boolean isUnsupportedComplexPath(String path) {
+        return path != null && path.contains("[");
     }
 
     /**
