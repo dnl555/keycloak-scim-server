@@ -113,16 +113,18 @@ public class GroupsController extends AbstractController {
 
         // For now only support to filter on display name
         List<GroupModel> filteredGroups;
+        // Fetch the full match set; pagination is applied once below so totalResults stays accurate.
         if(scimFilter instanceof ComparisonFilter(
                 String attribute, ScimFilter.Operator operator, String value
         ) && operator == ScimFilter.Operator.EQ && attribute.equals(GroupAttribute.DISPLAY_NAME.getScimPath())){
-            filteredGroups = session.groups().searchForGroupByNameStream(realm, value, true, startIndex, count).toList();
+            filteredGroups = session.groups().searchForGroupByNameStream(realm, value, true, null, null).toList();
         }else{
             filteredGroups = session.groups().getGroupsStream(realm).toList();
         }
 
+        // startIndex is 1-based per RFC 7644 section 3.4.2.4; convert to a 0-based offset.
         List<Group> groups = filteredGroups.stream()
-            .skip(startIndex)
+            .skip(Math.max(0, startIndex - 1))
             .limit(count)
             .map(group -> translateGroup(scimContext, group))
             .collect(Collectors.toList());
@@ -131,7 +133,7 @@ public class GroupsController extends AbstractController {
         result.setStartIndex(startIndex);
         result.setItemsPerPage(count);
         result.setResources(groups);
-        result.setSchemas(Collections.singletonList("urn:ietf:params:scim:api:messages:2.0:ListResponse"));
+        result.setSchemas(Collections.singletonList(Schemas.LIST_RESPONSE_SCHEMA));
 
         return result;
     }

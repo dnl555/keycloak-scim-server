@@ -7,5 +7,6 @@ public class Schemas {
 
     public static final String USER_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:User";
     public static final String GROUP_SCHEMA = "urn:ietf:params:scim:schemas:core:2.0:Group";
+    public static final String LIST_RESPONSE_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
 
 }

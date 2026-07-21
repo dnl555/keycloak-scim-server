@@ -201,8 +201,9 @@ public class UsersController extends AbstractController {
             .filter(user -> user.hasRole(scimManagedRole))
             .toList();
 
+        // startIndex is 1-based per RFC 7644 section 3.4.2.4; convert to a 0-based offset.
         List<User> users = filteredUsers.stream()
-            .skip(firstResult)
+            .skip(Math.max(0, firstResult - 1))
             .limit(maxResults)
             .map(user -> translateUser(scimContext, userAttributes, user))
             .toList();

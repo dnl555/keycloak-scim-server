@@ -77,7 +77,7 @@ public class ScimResources {
     public Response listRealmUsers(
         @Context KeycloakSession session,
         @QueryParam("filter") String filter,
-        @QueryParam("startIndex") @DefaultValue("0") Integer startIndex,
+        @QueryParam("startIndex") @DefaultValue("1") Integer startIndex,
         @QueryParam("count") @DefaultValue("100") Integer count
     ) {
         logger.debugf("GET /v2/Users filter=%s startIndex=%d count=%d", filter, startIndex, count);
@@ -201,7 +201,7 @@ public class ScimResources {
     public Response listRealmGroups(
             @Context KeycloakSession session,
             @QueryParam("filter") String filter,
-            @QueryParam("startIndex") @DefaultValue("0") int startIndex,
+            @QueryParam("startIndex") @DefaultValue("1") int startIndex,
             @QueryParam("count") @DefaultValue("100") int count
     ) {
         logger.debugf("GET /v2/Groups filter=%s startIndex=%d count=%d", filter, startIndex, count);
@@ -412,7 +412,7 @@ public class ScimResources {
             @Context KeycloakSession session,
             @PathParam("organizationId") String organizationId,
             @QueryParam("filter") String filter,
-            @QueryParam("startIndex") @DefaultValue("0") Integer startIndex,
+            @QueryParam("startIndex") @DefaultValue("1") Integer startIndex,
             @QueryParam("count") @DefaultValue("100") Integer count
     ) {
         logger.debugf("GET /v2/organizations/%s/Users filter=%s startIndex=%d count=%d", organizationId, filter, startIndex, count);
@@ -542,7 +542,7 @@ public class ScimResources {
             @Context KeycloakSession session,
             @PathParam("organizationId") String organizationId,
             @QueryParam("filter") String filter,
-            @QueryParam("startIndex") @DefaultValue("0") int startIndex,
+            @QueryParam("startIndex") @DefaultValue("1") int startIndex,
             @QueryParam("count") @DefaultValue("100") int count
     ) {
         logger.debugf("GET /v2/organizations/%s/Groups filter=%s startIndex=%d count=%d", organizationId, filter, startIndex, count);
