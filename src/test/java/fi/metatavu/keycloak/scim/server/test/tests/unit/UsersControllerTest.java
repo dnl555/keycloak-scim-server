@@ -110,4 +110,51 @@ class UsersControllerTest {
         verify(displayNameAttribute).write(userModel, "John Doe");
         assertNotNull(result);
     }
+
+    /**
+     * Entra sends complex multi-valued paths such as addresses[type eq "work"].formatted that
+     * cannot resolve to a Keycloak attribute. Refusing the whole PATCH over one of them throws
+     * away every other attribute in the same request, so the supported ones must still apply.
+     */
+    @Test
+    void testPatchSkipsUnsupportedPathAndAppliesTheRest()
+            throws UnsupportedPatchOperation, UserProfileValidationException {
+        fi.metatavu.keycloak.scim.server.model.PatchRequest patchRequest =
+                new fi.metatavu.keycloak.scim.server.model.PatchRequest();
+
+        PatchRequestOperationsInner unsupported = new PatchRequestOperationsInner();
+        unsupported.setOp("replace");
+        unsupported.setPath("addresses[type eq \"work\"].formatted");
+        unsupported.setValue("1 Example Street");
+
+        PatchRequestOperationsInner supported = new PatchRequestOperationsInner();
+        supported.setOp("replace");
+        supported.setPath("displayName");
+        supported.setValue("Jane Roe");
+
+        patchRequest.setOperations(List.of(unsupported, supported));
+
+        RealmScimConfig realmScimConfig = new RealmScimConfig(realmModel);
+        when(scimContext.getConfig()).thenReturn(realmScimConfig);
+        when(scimContext.getSession()).thenReturn(keycloakSession);
+        lenient().when(scimContext.getRealm()).thenReturn(realmModel);
+        when(scimContext.getServerBaseUri()).thenReturn(URI.create("http://localhost:8080/auth/realms/master/scim"));
+        when(keycloakSession.getProvider(UserProfileProvider.class)).thenReturn(null);
+
+        when(userModel.getId()).thenReturn("test-user-id");
+        lenient().when(userModel.getUsername()).thenReturn("testuser");
+        when(userModel.getEmail()).thenReturn("test@example.com");
+        when(userModel.isEnabled()).thenReturn(true);
+
+        doReturn(null).when(userAttributes).findByScimPath("addresses[type eq \"work\"].formatted");
+        doReturn(displayNameAttribute).when(userAttributes).findByScimPath("displayName");
+        when(displayNameAttribute.getSourceId()).thenReturn("displayName");
+        when(userAttributes.listBySource(any())).thenReturn(List.of());
+
+        fi.metatavu.keycloak.scim.server.model.User result = usersController.patchUser(
+                scimContext, userAttributes, userModel, patchRequest);
+
+        verify(displayNameAttribute).write(userModel, "Jane Roe");
+        assertNotNull(result);
+    }
 }

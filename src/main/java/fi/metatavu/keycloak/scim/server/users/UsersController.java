@@ -385,7 +385,9 @@ public class UsersController extends AbstractController {
 
         UserAttribute<?> userAttribute = userAttributes.findByScimPath(path);
         if (userAttribute == null) {
-            throw new UnsupportedUserPath("Unsupported attribute: " + path);
+            // Skipped here for the same reason it is skipped when applied: one unmappable path
+            // must not fail validation for the whole request. Logged where it is applied.
+            return;
         }
 
         Object validationValue = op == PatchOperation.REMOVE ? null : UserProfileValidationService.normalizeValue(value);
@@ -435,7 +437,8 @@ public class UsersController extends AbstractController {
                     }
                     UserAttribute<?> ua = userAttributes.findByScimPath(attrPath);
                     if (ua == null) {
-                        throw new UnsupportedUserPath("Unsupported attribute: " + attrPath);
+                        logger.warn("Unsupported attribute: " + attrPath + " (skipped, rest of the PATCH still applies)");
+                        continue;
                     }
                     applyPatchValue(op, ua, existing, entry.getValue());
                 }
@@ -448,7 +451,12 @@ public class UsersController extends AbstractController {
 
             UserAttribute<?> userAttribute = userAttributes.findByScimPath(path);
             if (userAttribute == null) {
-                throw new UnsupportedUserPath("Unsupported attribute: " + path);
+                // An IdP may send paths we cannot map, notably complex multi-valued ones such as
+                // addresses[type eq "work"].formatted. Failing the whole request over one of them
+                // discards every other attribute the IdP sent, so skip just this operation.
+                // GET filters stay strict: there, an unevaluable filter must not return wrong rows.
+                logger.warn("Unsupported attribute: " + path + " (skipped, rest of the PATCH still applies)");
+                continue;
             }
             applyPatchValue(op, userAttribute, existing, value);
         }
