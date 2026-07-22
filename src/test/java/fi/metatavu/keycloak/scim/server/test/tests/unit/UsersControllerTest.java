@@ -157,4 +157,43 @@ class UsersControllerTest {
         verify(displayNameAttribute).write(userModel, "Jane Roe");
         assertNotNull(result);
     }
+
+    /**
+     * An IdP may address extension attributes by their fully qualified schema URN, e.g.
+     * urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager. Attribute lookup is an
+     * exact match on the bare name, so the prefix has to be stripped or the attribute never
+     * resolves and the value is dropped.
+     */
+    @Test
+    void testPatchResolvesEnterpriseSchemaPrefixedPath()
+            throws UnsupportedPatchOperation, UserProfileValidationException {
+        fi.metatavu.keycloak.scim.server.model.PatchRequest patchRequest =
+                new fi.metatavu.keycloak.scim.server.model.PatchRequest();
+
+        PatchRequestOperationsInner operation = new PatchRequestOperationsInner();
+        operation.setOp("replace");
+        operation.setPath("urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager");
+        operation.setValue("Jane Roe");
+        patchRequest.setOperations(List.of(operation));
+
+        RealmScimConfig realmScimConfig = new RealmScimConfig(realmModel);
+        when(scimContext.getConfig()).thenReturn(realmScimConfig);
+        when(scimContext.getSession()).thenReturn(keycloakSession);
+        lenient().when(scimContext.getRealm()).thenReturn(realmModel);
+        when(scimContext.getServerBaseUri()).thenReturn(URI.create("http://localhost:8080/auth/realms/master/scim"));
+        when(keycloakSession.getProvider(UserProfileProvider.class)).thenReturn(null);
+
+        when(userModel.getId()).thenReturn("test-user-id");
+        lenient().when(userModel.getUsername()).thenReturn("testuser");
+        when(userModel.getEmail()).thenReturn("test@example.com");
+        when(userModel.isEnabled()).thenReturn(true);
+
+        doReturn(displayNameAttribute).when(userAttributes).findByScimPath("manager");
+        when(displayNameAttribute.getSourceId()).thenReturn("manager");
+        when(userAttributes.listBySource(any())).thenReturn(List.of());
+
+        usersController.patchUser(scimContext, userAttributes, userModel, patchRequest);
+
+        verify(displayNameAttribute).write(userModel, "Jane Roe");
+    }
 }

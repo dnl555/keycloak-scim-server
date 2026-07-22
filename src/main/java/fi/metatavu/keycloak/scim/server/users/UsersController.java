@@ -351,7 +351,7 @@ public class UsersController extends AbstractController {
                 throw new UnsupportedPatchOperation("Unsupported patch operation: " + operation.getOp());
             }
 
-            String path = operation.getPath();
+            String path = normalizeScimPath(operation.getPath());
             Object value = operation.getValue();
 
             if (path == null) {
@@ -360,13 +360,13 @@ public class UsersController extends AbstractController {
                 }
 
                 for (Map.Entry<?, ?> entry : valueMap.entrySet()) {
-                    String attrPath = String.valueOf(entry.getKey());
+                    String attrPath = normalizeScimPath(String.valueOf(entry.getKey()));
                     collectPatchAttributeForValidation(result, userAttributes, op, attrPath, entry.getValue());
                 }
                 continue;
             }
 
-            collectPatchAttributeForValidation(result, userAttributes, op, path, value);
+            collectPatchAttributeForValidation(result, userAttributes, op, normalizeScimPath(path), value);
         }
 
         return result;
@@ -417,7 +417,7 @@ public class UsersController extends AbstractController {
                 throw new UnsupportedPatchOperation("Unsupported patch operation: " + operation.getOp());
             }
 
-            String path = operation.getPath();
+            String path = normalizeScimPath(operation.getPath());
             Object value = operation.getValue();
 
             // RFC 7644 §3.5.2: when "path" is omitted, "value" carries a map of
@@ -428,7 +428,7 @@ public class UsersController extends AbstractController {
                     throw new UnsupportedUserPath("PatchOp without 'path' requires a map-valued 'value'");
                 }
                 for (Map.Entry<?, ?> entry : valueMap.entrySet()) {
-                    String attrPath = String.valueOf(entry.getKey());
+                    String attrPath = normalizeScimPath(String.valueOf(entry.getKey()));
                     if (isReadOnlyOrStructural(attrPath)) {
                         // RFC 7644 §3.5.2 / §7.5: ignore read-only and
                         // structural attributes (id, meta, schemas)
@@ -473,6 +473,29 @@ public class UsersController extends AbstractController {
      * @param existing user being patched
      * @param value    raw operation value
      */
+    private static final String CORE_USER_SCHEMA_PREFIX = "urn:ietf:params:scim:schemas:core:2.0:User:";
+    private static final String ENTERPRISE_USER_SCHEMA_PREFIX =
+        "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:";
+
+    /**
+     * Strips the SCIM core / enterprise User schema URN prefix from a PATCH path so extension
+     * attributes (e.g. {@code urn:...:extension:enterprise:2.0:User:manager}) resolve by their
+     * bare name, which is what can be declared as a user-profile attribute. Attribute lookup is
+     * an exact match, so without this the attribute never resolves and the value is dropped.
+     */
+    private static String normalizeScimPath(String path) {
+        if (path == null) {
+            return null;
+        }
+        if (path.startsWith(ENTERPRISE_USER_SCHEMA_PREFIX)) {
+            return path.substring(ENTERPRISE_USER_SCHEMA_PREFIX.length());
+        }
+        if (path.startsWith(CORE_USER_SCHEMA_PREFIX)) {
+            return path.substring(CORE_USER_SCHEMA_PREFIX.length());
+        }
+        return path;
+    }
+
     protected void applyPatchValue(
         PatchOperation op,
         UserAttribute<?> attr,
