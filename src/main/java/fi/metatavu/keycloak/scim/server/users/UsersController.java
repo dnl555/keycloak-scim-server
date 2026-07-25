@@ -31,6 +31,8 @@ import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.userprofile.config.UPConfig;
+import org.keycloak.userprofile.UserProfileProvider;
 
 import java.util.*;
 
@@ -79,24 +81,32 @@ public class UsersController extends AbstractController {
 
         Map<String, Object> additionalProperties = scimUser.getAdditionalProperties();
         if (additionalProperties != null) {
+            boolean allowUnmanagedStore = isUnmanagedAttributePolicyEnabled(session);
             additionalProperties.forEach((key, value) -> {
                 UserAttribute<?> userAttribute = userAttributes.findByScimPath(key);
-                if (userAttribute != null) {
-                    if (userAttribute instanceof StringUserAttribute) {
-                        if (value instanceof String) {
-                            ((StringUserAttribute) userAttribute).write(user, (String) value);
-                        } else {
-                            logger.warn("Unsupported value type: " + value.getClass());
-                        }
-                    } else if (userAttribute instanceof BooleanUserAttribute) {
-                        if (value instanceof Boolean) {
-                            ((BooleanUserAttribute) userAttribute).write(user, (Boolean) value);
-                        } else {
-                            logger.warn("Unsupported value type: " + value.getClass());
-                        }
-                    } else {
-                        logger.warn("Unsupported attribute: " + key);
+                if (userAttribute == null) {
+                    // Attributes the server does not map (e.g. phoneNumbers, addresses) reach create
+                    // via additionalProperties. Store them flattened when the realm allows unmanaged
+                    // attributes; otherwise log the drop so it is visible rather than silent.
+                    if (!(allowUnmanagedStore && storeUnmanagedAttribute(user, normalizeScimPath(key), value))) {
+                        logger.warn("Unsupported attribute on create: " + key + " (dropped)");
                     }
+                    return;
+                }
+                if (userAttribute instanceof StringUserAttribute) {
+                    if (value instanceof String) {
+                        ((StringUserAttribute) userAttribute).write(user, (String) value);
+                    } else {
+                        logger.warn("Unsupported value type: " + value.getClass());
+                    }
+                } else if (userAttribute instanceof BooleanUserAttribute) {
+                    if (value instanceof Boolean) {
+                        ((BooleanUserAttribute) userAttribute).write(user, (Boolean) value);
+                    } else {
+                        logger.warn("Unsupported value type: " + value.getClass());
+                    }
+                } else {
+                    logger.warn("Unsupported attribute: " + key);
                 }
             });
         }
@@ -311,7 +321,8 @@ public class UsersController extends AbstractController {
             collectPatchAttributesForValidation(userAttributes, patchRequest)
         );
 
-        applyPatchOperations(userAttributes, existing, patchRequest);
+        applyPatchOperations(userAttributes, existing, patchRequest,
+            isUnmanagedAttributePolicyEnabled(scimContext.getSession()));
 
         dispatchUserUpdateEvent(scimContext, existing);
 
@@ -408,7 +419,8 @@ public class UsersController extends AbstractController {
     protected void applyPatchOperations(
         UserAttributes userAttributes,
         UserModel existing,
-        fi.metatavu.keycloak.scim.server.model.PatchRequest patchRequest
+        fi.metatavu.keycloak.scim.server.model.PatchRequest patchRequest,
+        boolean allowUnmanagedStore
     ) throws UnsupportedPatchOperation {
         for (var operation : patchRequest.getOperations()) {
             PatchOperation op = PatchOperation.fromString(operation.getOp());
@@ -437,7 +449,9 @@ public class UsersController extends AbstractController {
                     }
                     UserAttribute<?> ua = userAttributes.findByScimPath(attrPath);
                     if (ua == null) {
-                        logger.warn("Unsupported attribute: " + attrPath + " (skipped, rest of the PATCH still applies)");
+                        if (!(allowUnmanagedStore && storeUnmanagedAttribute(existing, attrPath, entry.getValue()))) {
+                            logger.warn("Unsupported attribute: " + attrPath + " (skipped, rest of the PATCH still applies)");
+                        }
                         continue;
                     }
                     applyPatchValue(op, ua, existing, entry.getValue());
@@ -452,10 +466,14 @@ public class UsersController extends AbstractController {
             UserAttribute<?> userAttribute = userAttributes.findByScimPath(path);
             if (userAttribute == null) {
                 // An IdP may send paths we cannot map, notably complex multi-valued ones such as
-                // addresses[type eq "work"].formatted. Failing the whole request over one of them
-                // discards every other attribute the IdP sent, so skip just this operation.
-                // GET filters stay strict: there, an unevaluable filter must not return wrong rows.
-                logger.warn("Unsupported attribute: " + path + " (skipped, rest of the PATCH still applies)");
+                // addresses[type eq "work"].formatted. When the realm allows unmanaged attributes we
+                // store these flattened (matching the SCIM schema URN layout, so migrated data updates
+                // in place) instead of dropping them; otherwise we skip just this operation so the rest
+                // of the PATCH still applies. GET filters stay strict: an unevaluable filter must not
+                // return wrong rows.
+                if (!(allowUnmanagedStore && storeUnmanagedAttribute(existing, path, value))) {
+                    logger.warn("Unsupported attribute: " + path + " (skipped, rest of the PATCH still applies)");
+                }
                 continue;
             }
             applyPatchValue(op, userAttribute, existing, value);
@@ -494,6 +512,40 @@ public class UsersController extends AbstractController {
             return path.substring(CORE_USER_SCHEMA_PREFIX.length());
         }
         return path;
+    }
+
+    /**
+     * Whether the realm permits unmanaged user attributes. When enabled, SCIM attributes the
+     * server does not otherwise map are stored as flattened unmanaged attributes (matching the
+     * SCIM schema URN layout) instead of being dropped.
+     *
+     * @param session Keycloak session
+     * @return true when the realm's unmanaged attribute policy is ENABLED
+     */
+    protected boolean isUnmanagedAttributePolicyEnabled(KeycloakSession session) {
+        UserProfileProvider provider = session.getProvider(UserProfileProvider.class);
+        return provider != null
+            && UPConfig.UnmanagedAttributePolicy.ENABLED.equals(provider.getConfiguration().getUnmanagedAttributePolicy());
+    }
+
+    /**
+     * Stores a SCIM attribute the server does not otherwise map as flattened unmanaged attributes,
+     * mirroring the SCIM schema URN layout so data migrated from the previous SCIM extension is
+     * updated in place rather than duplicated under a new key.
+     *
+     * @param user  user being written
+     * @param path  normalized SCIM path (schema URN prefix stripped)
+     * @param value operation value (scalar or multi-valued array)
+     * @return true when at least one flattened attribute was written
+     */
+    private boolean storeUnmanagedAttribute(UserModel user, String path, Object value) {
+        Map<String, String> writes = ScimAttributeFlattener.flatten(path, value, user.getAttributes());
+        if (writes.isEmpty()) {
+            return false;
+        }
+        writes.forEach((key, val) -> user.setAttribute(key, List.of(val)));
+        logger.infof("Stored unmanaged SCIM attribute '%s' as %d flattened key(s)", path, writes.size());
+        return true;
     }
 
     protected void applyPatchValue(

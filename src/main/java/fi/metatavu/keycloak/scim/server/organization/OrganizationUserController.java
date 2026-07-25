@@ -220,7 +220,8 @@ public class OrganizationUserController extends UsersController  {
             collectPatchAttributesForValidation(userAttributes, patchRequest)
         );
 
-        applyPatchOperations(userAttributes, existing, patchRequest);
+        applyPatchOperations(userAttributes, existing, patchRequest,
+            isUnmanagedAttributePolicyEnabled(session));
 
         fi.metatavu.keycloak.scim.server.model.User patchedUser = translateUser(
             scimContext,
