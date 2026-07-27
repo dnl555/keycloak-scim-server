@@ -79,37 +79,22 @@ public class UsersController extends AbstractController {
             user.grantRole(scimRole);
         }
 
+        boolean allowUnmanagedStore = isUnmanagedAttributePolicyEnabled(session);
         Map<String, Object> additionalProperties = scimUser.getAdditionalProperties();
         if (additionalProperties != null) {
-            boolean allowUnmanagedStore = isUnmanagedAttributePolicyEnabled(session);
             additionalProperties.forEach((key, value) -> {
-                UserAttribute<?> userAttribute = userAttributes.findByScimPath(key);
-                if (userAttribute == null) {
-                    // Attributes the server does not map (e.g. phoneNumbers, addresses) reach create
-                    // via additionalProperties. Store them flattened when the realm allows unmanaged
-                    // attributes; otherwise log the drop so it is visible rather than silent.
-                    if (!(allowUnmanagedStore && storeUnmanagedAttribute(user, normalizeScimPath(key), value))) {
-                        logger.warn("Unsupported attribute on create: " + key + " (dropped)");
-                    }
+                if (isEnterpriseExtensionObject(key) && value instanceof Map<?, ?> enterprise) {
+                    // The enterprise extension arrives as a nested object on create; decompose it so
+                    // each sub-attribute (employeeNumber, department, manager, ...) is stored the same
+                    // way it would be when sent as a flat urn: path on a later update.
+                    enterprise.forEach((subKey, subVal) ->
+                        writeCreateAttribute(userAttributes, user, String.valueOf(subKey), unwrapManagerValue(subVal), allowUnmanagedStore));
                     return;
                 }
-                if (userAttribute instanceof StringUserAttribute) {
-                    if (value instanceof String) {
-                        ((StringUserAttribute) userAttribute).write(user, (String) value);
-                    } else {
-                        logger.warn("Unsupported value type: " + value.getClass());
-                    }
-                } else if (userAttribute instanceof BooleanUserAttribute) {
-                    if (value instanceof Boolean) {
-                        ((BooleanUserAttribute) userAttribute).write(user, (Boolean) value);
-                    } else {
-                        logger.warn("Unsupported value type: " + value.getClass());
-                    }
-                } else {
-                    logger.warn("Unsupported attribute: " + key);
-                }
+                writeCreateAttribute(userAttributes, user, key, value, allowUnmanagedStore);
             });
         }
+        stampLastModified(user, allowUnmanagedStore);
 
         User createdUser = translateUser(
             scimContext,
@@ -294,6 +279,7 @@ public class UsersController extends AbstractController {
             linkUserIdp(session, realm, existing, scimUsername, externalId, idpAlias);
         }
 
+        stampLastModified(existing, isUnmanagedAttributePolicyEnabled(scimContext.getSession()));
         dispatchUserUpdateEvent(scimContext, existing);
 
         return updatedUser;
@@ -324,6 +310,7 @@ public class UsersController extends AbstractController {
         applyPatchOperations(userAttributes, existing, patchRequest,
             isUnmanagedAttributePolicyEnabled(scimContext.getSession()));
 
+        stampLastModified(existing, isUnmanagedAttributePolicyEnabled(scimContext.getSession()));
         dispatchUserUpdateEvent(scimContext, existing);
 
         final User patchedUser = translateUser(scimContext, userAttributes, existing);
@@ -538,7 +525,20 @@ public class UsersController extends AbstractController {
      * @param value operation value (scalar or multi-valued array)
      * @return true when at least one flattened attribute was written
      */
+    // SCIM writeOnly attributes (password) must never be persisted, and structural attributes
+    // (schemas/meta/id/groups) are handled elsewhere; none are stored as user attributes.
+    private static final java.util.Set<String> NEVER_STORE_ATTRIBUTES = java.util.Set.of(
+        "password", "schemas", "meta", "id", "groups");
+
+    private static final String META_LAST_MODIFIED =
+        "urn:ietf:params:scim:schemas:core:2.0:Meta:meta.lastModified";
+
     private boolean storeUnmanagedAttribute(UserModel user, String path, Object value) {
+        if (path != null && NEVER_STORE_ATTRIBUTES.contains(baseAttributeName(path))) {
+            // Never persist writeOnly (password) or structural attributes. Treated as handled so no
+            // drop is logged.
+            return true;
+        }
         Map<String, String> writes = ScimAttributeFlattener.flatten(path, value, user.getAttributes());
         if (writes.isEmpty()) {
             return false;
@@ -546,6 +546,62 @@ public class UsersController extends AbstractController {
         writes.forEach((key, val) -> user.setAttribute(key, List.of(val)));
         logger.infof("Stored unmanaged SCIM attribute '%s' as %d flattened key(s)", path, writes.size());
         return true;
+    }
+
+    private static String baseAttributeName(String path) {
+        int cut = path.length();
+        int bracket = path.indexOf('[');
+        if (bracket >= 0) cut = Math.min(cut, bracket);
+        int dot = path.indexOf('.');
+        if (dot >= 0) cut = Math.min(cut, dot);
+        return path.substring(0, cut);
+    }
+
+    private static boolean isEnterpriseExtensionObject(String key) {
+        return "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User".equals(key)
+            || "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:".equals(key);
+    }
+
+    private static Object unwrapManagerValue(Object value) {
+        // manager is itself a complex object {value, displayName, $ref}; persist its value (id).
+        if (value instanceof Map<?, ?> managerObject && managerObject.containsKey("value")) {
+            return managerObject.get("value");
+        }
+        return value;
+    }
+
+    private void writeCreateAttribute(UserAttributes userAttributes, UserModel user, String key, Object value, boolean allowUnmanagedStore) {
+        UserAttribute<?> userAttribute = userAttributes.findByScimPath(key);
+        if (userAttribute == null) {
+            if (!(allowUnmanagedStore && storeUnmanagedAttribute(user, normalizeScimPath(key), value))) {
+                logger.warn("Unsupported attribute on create: " + key + " (dropped)");
+            }
+            return;
+        }
+        if (userAttribute instanceof StringUserAttribute) {
+            if (value instanceof String) {
+                ((StringUserAttribute) userAttribute).write(user, (String) value);
+            } else {
+                logger.warn("Unsupported value type: " + value.getClass());
+            }
+        } else if (userAttribute instanceof BooleanUserAttribute) {
+            if (value instanceof Boolean) {
+                ((BooleanUserAttribute) userAttribute).write(user, (Boolean) value);
+            } else {
+                logger.warn("Unsupported value type: " + value.getClass());
+            }
+        } else {
+            logger.warn("Unsupported attribute: " + key);
+        }
+    }
+
+    private void stampLastModified(UserModel user, boolean allowUnmanagedStore) {
+        // Record when this user was last written by SCIM, visible in the admin console. Only when the
+        // realm allows unmanaged attributes (this is an unmanaged, urn:-schema attribute).
+        if (allowUnmanagedStore) {
+            user.setAttribute(META_LAST_MODIFIED, List.of(
+                java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()));
+        }
     }
 
     protected void applyPatchValue(
